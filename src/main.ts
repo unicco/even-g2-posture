@@ -10,29 +10,31 @@ import {
   ImageRawDataUpdateResult,
 } from '@evenrealities/even_hub_sdk'
 
-// 姿勢 nudge（v9・リアクティブ猫・送信リトライ）。
-//   良い姿勢/軽い前傾 → proud / うつむき継続 → slump / 直すと proud。
-// 実機校正: まっすぐ x≈-0.08 / 下 x≈-0.36。
-//
-// 画像送信は BLE でたまに sendFailed する。sendFailed は例外でなく結果値で返るので、
-// 「結果が success 以外なら失敗扱い → 1 秒間隔で success するまで再送」する。
-// IMU は静止で配信停止するため最後の姿勢を保持。途絶が続けば imuControl を貼り直す。
+// 姿勢 nudge（v12・3 段階 + 警告アニメ・Even 風スマホ画面）。
+//   proud / concern(! + 尻尾フリフリ) / slump の 3 段階。
+// 実機校正: まっすぐ x≈-0.08 / 下 x≈-0.36。IMU は静止で配信停止 → 最後の姿勢を保持。
+// スマホ WebView 画面はユーザーに見える「アプリの顔」なので Even 風の状態表示にする。
+
+// デバッグ（HUD 左上の状態テキスト + スマホ下部の技術表示）。本番は false。
+const DEBUG = false
 
 const ENTER = -0.25
 const EXIT = -0.15
-const SUSTAIN_MS = 30_000 // うつむきが続いたらぐったりするまでの時間
+const WARN_AFTER_MS = 3_000
+const SUSTAIN_MS = 30_000
 const EMA_ALPHA = 0.5
 const TICK_MS = 250
+const WAG_MS = 900
 const STALE_REARM_MS = 8_000
 const REARM_EVERY_MS = 8_000
-const IMG_RETRY_MS = 1_000 // 画像送信の最短間隔（失敗時の再送間隔）
+const IMG_RETRY_MS = 500
 
-const ICON_W = 96
-const ICON_H = 96
+const ICON_W = 64
+const ICON_H = 64
 const ICON_X = Math.round((576 - ICON_W) / 2)
-const ICON_Y = Math.round((288 - ICON_H) / 2) - 10
+const ICON_Y = Math.round((288 - ICON_H) / 2) - 8
 
-type Pose = 'proud' | 'slump'
+type Pose = 'proud' | 'concernA' | 'concernB' | 'slump'
 
 let latestX: number | null = null
 let lastSampleAt = 0
@@ -43,17 +45,32 @@ let slumped = false
 let lastTick = 0
 let lastRearm = 0
 
-let proudPng: Uint8Array
-let slumpPng: Uint8Array
-let pendingPose: Pose = 'proud' // 出したいポーズ
-let sentPose: Pose | null = null // success で送れたポーズ
+const pngs: Record<Pose, Uint8Array> = {} as Record<Pose, Uint8Array>
+let pendingPose: Pose = 'proud'
+let sentPose: Pose | null = null
 let imgSending = false
 let lastImgSendAt = 0
 let lastDebugContent = ''
 
-const statusEl = document.getElementById('status') as HTMLElement
-const valuesEl = document.getElementById('values') as HTMLElement
-const maxEl = document.getElementById('max') as HTMLElement
+const faceEl = document.getElementById('face') as HTMLElement
+const msgEl = document.getElementById('stateMsg') as HTMLElement
+const subEl = document.getElementById('stateSub') as HTMLElement
+const techEl = document.getElementById('tech') as HTMLElement
+
+function setPhone(face: string, msg: string, sub: string): void {
+  faceEl.textContent = face
+  msgEl.textContent = msg
+  subEl.textContent = sub
+}
+function tech(s: string): void {
+  if (!DEBUG) return
+  techEl.style.display = 'block'
+  techEl.textContent = s
+}
+
+const W = ICON_W
+const H = ICON_H
+const CX = W * 0.42
 
 async function makePng(draw: (ctx: CanvasRenderingContext2D) => void): Promise<Uint8Array> {
   const canvas = document.createElement('canvas')
@@ -67,115 +84,138 @@ async function makePng(draw: (ctx: CanvasRenderingContext2D) => void): Promise<U
   return new Uint8Array(await blob.arrayBuffer())
 }
 
-const W = ICON_W
-const H = ICON_H
-
-function drawProud(ctx: CanvasRenderingContext2D): void {
+function bg(ctx: CanvasRenderingContext2D): void {
   ctx.fillStyle = '#000'
   ctx.fillRect(0, 0, W, H)
+}
+function bodyHeadEars(ctx: CanvasRenderingContext2D): void {
   ctx.fillStyle = '#fff'
-  const cx = W / 2
   ctx.beginPath()
-  ctx.moveTo(cx - W * 0.24, H * 0.94)
-  ctx.quadraticCurveTo(cx - W * 0.32, H * 0.55, cx - W * 0.15, H * 0.44)
-  ctx.lineTo(cx + W * 0.15, H * 0.44)
-  ctx.quadraticCurveTo(cx + W * 0.32, H * 0.55, cx + W * 0.24, H * 0.94)
+  ctx.moveTo(CX - W * 0.24, H * 0.94)
+  ctx.quadraticCurveTo(CX - W * 0.32, H * 0.55, CX - W * 0.15, H * 0.44)
+  ctx.lineTo(CX + W * 0.15, H * 0.44)
+  ctx.quadraticCurveTo(CX + W * 0.32, H * 0.55, CX + W * 0.24, H * 0.94)
   ctx.closePath()
   ctx.fill()
   ctx.beginPath()
-  ctx.arc(cx, H * 0.32, H * 0.18, 0, Math.PI * 2)
+  ctx.arc(CX, H * 0.32, H * 0.18, 0, Math.PI * 2)
   ctx.fill()
   ctx.beginPath()
-  ctx.moveTo(cx - H * 0.17, H * 0.21)
-  ctx.lineTo(cx - H * 0.08, H * 0.04)
-  ctx.lineTo(cx - H * 0.01, H * 0.2)
+  ctx.moveTo(CX - H * 0.17, H * 0.21)
+  ctx.lineTo(CX - H * 0.08, H * 0.04)
+  ctx.lineTo(CX - H * 0.01, H * 0.2)
   ctx.closePath()
   ctx.fill()
   ctx.beginPath()
-  ctx.moveTo(cx + H * 0.17, H * 0.21)
-  ctx.lineTo(cx + H * 0.08, H * 0.04)
-  ctx.lineTo(cx + H * 0.01, H * 0.2)
+  ctx.moveTo(CX + H * 0.17, H * 0.21)
+  ctx.lineTo(CX + H * 0.08, H * 0.04)
+  ctx.lineTo(CX + H * 0.01, H * 0.2)
   ctx.closePath()
   ctx.fill()
+}
+function eyes(ctx: CanvasRenderingContext2D): void {
+  ctx.fillStyle = '#000'
+  ctx.beginPath()
+  ctx.arc(CX - H * 0.07, H * 0.32, H * 0.03, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.beginPath()
+  ctx.arc(CX + H * 0.07, H * 0.32, H * 0.03, 0, Math.PI * 2)
+  ctx.fill()
+}
+function bang(ctx: CanvasRenderingContext2D): void {
+  ctx.fillStyle = '#fff'
+  ctx.fillRect(W * 0.82, H * 0.04, W * 0.06, H * 0.14)
+  ctx.beginPath()
+  ctx.arc(W * 0.85, H * 0.24, W * 0.045, 0, Math.PI * 2)
+  ctx.fill()
+}
+
+function drawProud(ctx: CanvasRenderingContext2D): void {
+  bg(ctx)
+  bodyHeadEars(ctx)
   ctx.lineWidth = W * 0.1
   ctx.strokeStyle = '#fff'
   ctx.lineCap = 'round'
   ctx.beginPath()
-  ctx.moveTo(cx + W * 0.2, H * 0.9)
-  ctx.quadraticCurveTo(cx + W * 0.44, H * 0.82, cx + W * 0.4, H * 0.55)
+  ctx.moveTo(CX + W * 0.2, H * 0.9)
+  ctx.quadraticCurveTo(CX + W * 0.42, H * 0.82, CX + W * 0.38, H * 0.55)
   ctx.stroke()
-  ctx.fillStyle = '#000'
+  eyes(ctx)
+}
+
+function drawConcern(ctx: CanvasRenderingContext2D, phase: number): void {
+  bg(ctx)
+  bodyHeadEars(ctx)
+  ctx.lineWidth = W * 0.1
+  ctx.strokeStyle = '#fff'
+  ctx.lineCap = 'round'
   ctx.beginPath()
-  ctx.arc(cx - H * 0.07, H * 0.32, H * 0.028, 0, Math.PI * 2)
-  ctx.fill()
-  ctx.beginPath()
-  ctx.arc(cx + H * 0.07, H * 0.32, H * 0.028, 0, Math.PI * 2)
-  ctx.fill()
+  ctx.moveTo(CX + W * 0.2, H * 0.9)
+  if (phase === 0) ctx.quadraticCurveTo(CX + W * 0.44, H * 0.78, CX + W * 0.3, H * 0.5)
+  else ctx.quadraticCurveTo(CX + W * 0.4, H * 0.92, CX + W * 0.46, H * 0.64)
+  ctx.stroke()
+  eyes(ctx)
+  bang(ctx)
 }
 
 function drawSlump(ctx: CanvasRenderingContext2D): void {
-  ctx.fillStyle = '#000'
-  ctx.fillRect(0, 0, W, H)
+  bg(ctx)
   ctx.fillStyle = '#fff'
   ctx.beginPath()
-  ctx.ellipse(W * 0.56, H * 0.76, W * 0.36, H * 0.15, 0, 0, Math.PI * 2)
+  ctx.ellipse(W * 0.52, H * 0.76, W * 0.34, H * 0.15, 0, 0, Math.PI * 2)
   ctx.fill()
   ctx.beginPath()
-  ctx.arc(W * 0.26, H * 0.66, H * 0.17, 0, Math.PI * 2)
+  ctx.arc(W * 0.24, H * 0.66, H * 0.17, 0, Math.PI * 2)
   ctx.fill()
   ctx.beginPath()
-  ctx.moveTo(W * 0.22, H * 0.54)
-  ctx.lineTo(W * 0.1, H * 0.48)
-  ctx.lineTo(W * 0.24, H * 0.5)
+  ctx.moveTo(W * 0.2, H * 0.54)
+  ctx.lineTo(W * 0.08, H * 0.48)
+  ctx.lineTo(W * 0.22, H * 0.5)
   ctx.closePath()
   ctx.fill()
   ctx.beginPath()
-  ctx.moveTo(W * 0.3, H * 0.52)
-  ctx.lineTo(W * 0.3, H * 0.42)
-  ctx.lineTo(W * 0.39, H * 0.52)
+  ctx.moveTo(W * 0.28, H * 0.52)
+  ctx.lineTo(W * 0.28, H * 0.42)
+  ctx.lineTo(W * 0.37, H * 0.52)
   ctx.closePath()
   ctx.fill()
   ctx.lineWidth = W * 0.09
   ctx.strokeStyle = '#fff'
   ctx.lineCap = 'round'
   ctx.beginPath()
-  ctx.moveTo(W * 0.88, H * 0.78)
-  ctx.quadraticCurveTo(W * 0.98, H * 0.82, W * 0.93, H * 0.92)
+  ctx.moveTo(W * 0.84, H * 0.78)
+  ctx.quadraticCurveTo(W * 0.94, H * 0.82, W * 0.89, H * 0.92)
   ctx.stroke()
   ctx.strokeStyle = '#000'
-  ctx.lineWidth = H * 0.022
+  ctx.lineWidth = H * 0.025
   ctx.beginPath()
-  ctx.moveTo(W * 0.19, H * 0.64)
-  ctx.lineTo(W * 0.26, H * 0.64)
+  ctx.moveTo(W * 0.17, H * 0.64)
+  ctx.lineTo(W * 0.24, H * 0.64)
   ctx.stroke()
   ctx.beginPath()
-  ctx.moveTo(W * 0.3, H * 0.64)
-  ctx.lineTo(W * 0.37, H * 0.64)
+  ctx.moveTo(W * 0.28, H * 0.64)
+  ctx.lineTo(W * 0.35, H * 0.64)
   ctx.stroke()
 }
 
 let bridgeRef: Awaited<ReturnType<typeof waitForEvenAppBridge>> | null = null
 
-// pendingPose を sentPose に一致させる。success 以外は失敗とみなし IMG_RETRY_MS 間隔で再送。
 function tickImage(now: number): void {
   if (!bridgeRef) return
-  if (pendingPose === sentPose) return // 既に出ている
-  if (imgSending) return // 同時送信不可
-  if (now - lastImgSendAt < IMG_RETRY_MS) return // 連投/再送のバックオフ
-
+  if (pendingPose === sentPose) return
+  if (imgSending) return
+  if (now - lastImgSendAt < IMG_RETRY_MS) return
   imgSending = true
   lastImgSendAt = now
   const target = pendingPose
   bridgeRef
-    .updateImageRawData(
-      new ImageRawDataUpdate({ containerID: 1, containerName: 'cat', imageData: target === 'slump' ? slumpPng : proudPng }),
-    )
+    .updateImageRawData(new ImageRawDataUpdate({ containerID: 1, containerName: 'cat', imageData: pngs[target] }))
     .then((r) => {
-      statusEl.textContent = `img: ${String(r)} (${target})`
-      if (r === ImageRawDataUpdateResult.success) sentPose = target // 成功時のみ確定
+      tech(`img: ${String(r)} (${target})`)
+      if (r === ImageRawDataUpdateResult.success) sentPose = target
     })
     .catch((e) => {
-      statusEl.textContent = `img error: ${String(e)}`
+      tech(`img error: ${String(e)}`)
     })
     .finally(() => {
       imgSending = false
@@ -187,30 +227,28 @@ async function main(): Promise<void> {
   try {
     bridge = await waitForEvenAppBridge()
   } catch {
-    statusEl.textContent =
-      'Even アプリ内で開いてください（通常のブラウザでは IMU を取得できません）'
+    setPhone('🐱', 'Even アプリで開いてください', '通常のブラウザでは動作しません')
     return
   }
   bridgeRef = bridge
 
-  proudPng = await makePng(drawProud)
-  slumpPng = await makePng(drawSlump)
+  pngs.proud = await makePng(drawProud)
+  pngs.concernA = await makePng((c) => drawConcern(c, 0))
+  pngs.concernB = await makePng((c) => drawConcern(c, 1))
+  pngs.slump = await makePng(drawSlump)
 
-  statusEl.textContent = 'HUD を作成中…'
+  const imageObject = [
+    new ImageContainerProperty({ xPosition: ICON_X, yPosition: ICON_Y, width: ICON_W, height: ICON_H, containerID: 1, containerName: 'cat' }),
+  ]
+  const textObject = DEBUG
+    ? [new TextContainerProperty({ xPosition: 8, yPosition: 4, width: 360, height: 28, containerID: 2, containerName: 'debug', content: '', isEventCapture: 0 })]
+    : []
+
   await bridge.createStartUpPageContainer(
-    new CreateStartUpPageContainer({
-      containerTotalNum: 2,
-      imageObject: [
-        new ImageContainerProperty({ xPosition: ICON_X, yPosition: ICON_Y, width: ICON_W, height: ICON_H, containerID: 1, containerName: 'cat' }),
-      ],
-      textObject: [
-        new TextContainerProperty({ xPosition: 20, yPosition: 252, width: 536, height: 30, containerID: 2, containerName: 'debug', content: 'starting…', isEventCapture: 0 }),
-      ],
-    }),
+    new CreateStartUpPageContainer({ containerTotalNum: DEBUG ? 2 : 1, imageObject, textObject }),
   )
 
   await bridge.imuControl(true, ImuReportPace.P100)
-  statusEl.textContent = '姿勢モニタ稼働中'
 
   bridge.onEvenHubEvent((event) => {
     const sys = event.sysEvent
@@ -245,22 +283,42 @@ async function main(): Promise<void> {
       }
     }
 
-    pendingPose = slumped ? 'slump' : 'proud'
+    let pose: Pose = 'proud'
+    let label = 'OK'
+    if (latestX === null) {
+      label = 'no data'
+    } else if (slumped) {
+      pose = 'slump'
+      label = 'SLUMP'
+    } else if (isDown && downAccumMs >= WARN_AFTER_MS) {
+      pose = Math.floor(now / WAG_MS) % 2 === 0 ? 'concernA' : 'concernB'
+      label = `warn ${(downAccumMs / 1000).toFixed(0)}s`
+    } else if (isDown) {
+      label = `down ${(downAccumMs / 1000).toFixed(0)}s`
+    }
+    pendingPose = pose
     tickImage(now)
 
+    // HUD のデバッグ文字
     const xStr = smoothedX === null ? '-' : smoothedX.toFixed(2)
-    const ageStr = age === Infinity ? '-' : (age / 1000).toFixed(1)
-    const state = latestX === null ? 'no data' : slumped ? 'SLUMP' : isDown ? `down ${(downAccumMs / 1000).toFixed(0)}s` : 'OK'
-    const debugContent = `x ${xStr} ${state} age${ageStr}`
-    if (debugContent !== lastDebugContent) {
-      lastDebugContent = debugContent
-      void bridge.textContainerUpgrade(
-        new TextContainerUpgrade({ containerID: 2, containerName: 'debug', content: debugContent }),
-      )
+    if (DEBUG) {
+      const debugContent = `${label} x${xStr}`
+      if (debugContent !== lastDebugContent) {
+        lastDebugContent = debugContent
+        void bridge.textContainerUpgrade(
+          new TextContainerUpgrade({ containerID: 2, containerName: 'debug', content: debugContent }),
+        )
+      }
     }
 
-    valuesEl.textContent = `x: ${xStr} age:${ageStr}s`
-    maxEl.textContent = `状態:${state} 猫(want/shown):${pendingPose}/${sentPose ?? '-'}`
+    // スマホ画面（ユーザー向けの状態表示）
+    if (latestX === null) setPhone('⌛', 'グラスと接続中…', 'Even グラスを装着してください')
+    else if (pose === 'slump') setPhone('😿', '猫がぐったり…', '背すじを伸ばすと起き上がります')
+    else if (pose === 'concernA' || pose === 'concernB') setPhone('🙀', '猫背気味です', '背すじを伸ばして')
+    else setPhone('😺', 'いい姿勢です', 'その調子！猫もごきげん')
+
+    const ageStr = age === Infinity ? '-' : (age / 1000).toFixed(1)
+    tech(`${label} x${xStr} age${ageStr}`)
   }, TICK_MS)
 }
 
