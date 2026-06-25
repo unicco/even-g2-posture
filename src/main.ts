@@ -10,21 +10,16 @@ import {
   ImageRawDataUpdateResult,
 } from '@evenrealities/even_hub_sdk'
 
-// 姿勢 nudge（v12・3 段階 + 警告アニメ・Even 風スマホ画面）。
-//   proud / concern(! + 尻尾フリフリ) / slump の 3 段階。
-// 実機校正: まっすぐ x≈-0.08 / 下 x≈-0.36。IMU は静止で配信停止 → 最後の姿勢を保持。
-// スマホ WebView 画面はユーザーに見える「アプリの顔」なので Even 風の状態表示にする。
+// 姿勢 nudge（v13・角度ベース + 設定 + i18n）。
+//   浅い前傾（concernX 以下）→ ! 警告（尻尾フリフリ）/ 深い前傾（slumpX 以下）→ ぐったり。
+//   どちらも delaySec 続いてから発動。直す（exit 超え）と proud。
+// 設定（デバッグ表示 / 反応秒数 / concernX / slumpX）はスマホ画面で変更・localStorage 保存・即反映。
+// 文言は navigator.language で ja/en 自動切替。HUD は猫のみ（言語非依存）。
 
-// デバッグ（HUD 左上の状態テキスト + スマホ下部の技術表示）。本番は false。
-const DEBUG = false
-
-const ENTER = -0.25
-const EXIT = -0.15
-const WARN_AFTER_MS = 3_000
-const SUSTAIN_MS = 30_000
 const EMA_ALPHA = 0.5
 const TICK_MS = 250
 const WAG_MS = 900
+const EXIT_MARGIN = 0.08
 const STALE_REARM_MS = 8_000
 const REARM_EVERY_MS = 8_000
 const IMG_RETRY_MS = 500
@@ -34,40 +29,142 @@ const ICON_H = 64
 const ICON_X = Math.round((576 - ICON_W) / 2)
 const ICON_Y = Math.round((288 - ICON_H) / 2) - 8
 
-type Pose = 'proud' | 'concernA' | 'concernB' | 'slump'
+type Config = { debug: boolean; delaySec: number; concernX: number; slumpX: number }
+const DEFAULTS: Config = { debug: false, delaySec: 3, concernX: -0.22, slumpX: -0.33 }
+const SKEY = 'postureCat.settings'
+let config: Config = { ...DEFAULTS }
+function loadConfig(): void {
+  try {
+    const s = localStorage.getItem(SKEY)
+    if (s) config = { ...DEFAULTS, ...JSON.parse(s) }
+  } catch {
+    /* ignore */
+  }
+}
+function saveConfig(): void {
+  try {
+    localStorage.setItem(SKEY, JSON.stringify(config))
+  } catch {
+    /* ignore */
+  }
+}
 
-let latestX: number | null = null
-let lastSampleAt = 0
-let smoothedX: number | null = null
-let isDown = false
-let downAccumMs = 0
-let slumped = false
-let lastTick = 0
-let lastRearm = 0
-
-const pngs: Record<Pose, Uint8Array> = {} as Record<Pose, Uint8Array>
-let pendingPose: Pose = 'proud'
-let sentPose: Pose | null = null
-let imgSending = false
-let lastImgSendAt = 0
-let lastDebugContent = ''
+type Str = Record<string, string>
+const JA: Str = {
+  tag: '猫が背すじを見守ります',
+  secSettings: '設定',
+  lblDebug: 'デバッグ表示',
+  lblDelay: '反応までの秒数',
+  lblConcern: '「！」になる傾き X',
+  lblSlump: 'ぐったりになる傾き X',
+  lblCurrentX: '現在の傾き X',
+  secHowto: '使い方',
+  step1: '1. グラスを装着する',
+  step2: '2. うつむきが続くと猫が「！」で警告',
+  step3: '3. 背すじを伸ばすと猫が元気に戻る',
+  foot: 'すべて端末内で動作・通信なし',
+  connecting: 'グラスと接続中…',
+  connectingSub: 'Even グラスを装着してください',
+  good: 'いい姿勢です',
+  goodSub: 'その調子！猫もごきげん',
+  concern: '猫背気味です',
+  concernSub: '背すじを伸ばして',
+  slump: '猫がぐったり…',
+  slumpSub: '背すじを伸ばすと起き上がります',
+  openInApp: 'Even アプリで開いてください',
+  openInAppSub: '通常のブラウザでは動作しません',
+}
+const EN: Str = {
+  tag: 'A cat that watches your posture',
+  secSettings: 'Settings',
+  lblDebug: 'Debug overlay',
+  lblDelay: 'Delay before reacting (sec)',
+  lblConcern: 'Warn (!) at tilt X',
+  lblSlump: 'Go limp at tilt X',
+  lblCurrentX: 'Current tilt X',
+  secHowto: 'How it works',
+  step1: '1. Put on the glasses',
+  step2: '2. Slouch too long and the cat warns with "!"',
+  step3: '3. Sit up straight and the cat perks up',
+  foot: 'Runs entirely on-device. No network.',
+  connecting: 'Connecting to glasses…',
+  connectingSub: 'Please put on your Even glasses',
+  good: 'Good posture',
+  goodSub: 'Nice! Your cat is happy',
+  concern: 'Slouching a bit',
+  concernSub: 'Sit up straight',
+  slump: 'Your cat went limp…',
+  slumpSub: 'Sit up straight to revive it',
+  openInApp: 'Open in the Even app',
+  openInAppSub: 'It does not run in a normal browser',
+}
+const L: Str = (navigator.language || '').toLowerCase().startsWith('ja') ? JA : EN
 
 const faceEl = document.getElementById('face') as HTMLElement
 const msgEl = document.getElementById('stateMsg') as HTMLElement
 const subEl = document.getElementById('stateSub') as HTMLElement
 const techEl = document.getElementById('tech') as HTMLElement
+const valXEl = document.getElementById('valX') as HTMLElement
 
+function setText(id: string, key: string): void {
+  const el = document.getElementById(id)
+  if (el) el.textContent = L[key]
+}
 function setPhone(face: string, msg: string, sub: string): void {
   faceEl.textContent = face
   msgEl.textContent = msg
   subEl.textContent = sub
 }
 function tech(s: string): void {
-  if (!DEBUG) return
-  techEl.style.display = 'block'
-  techEl.textContent = s
+  techEl.style.display = config.debug ? 'block' : 'none'
+  if (config.debug) techEl.textContent = s
+}
+function applyI18n(): void {
+  document.documentElement.lang = L === JA ? 'ja' : 'en'
+  for (const id of ['tag', 'secSettings', 'lblDebug', 'lblDelay', 'lblConcern', 'lblSlump', 'lblCurrentX', 'secHowto', 'step1', 'step2', 'step3', 'foot']) {
+    setText(id, id)
+  }
+}
+function initSettingsUI(): void {
+  const dbg = document.getElementById('optDebug') as HTMLInputElement
+  const delay = document.getElementById('optDelay') as HTMLInputElement
+  const con = document.getElementById('optConcern') as HTMLInputElement
+  const slu = document.getElementById('optSlump') as HTMLInputElement
+  const conVal = document.getElementById('valConcern') as HTMLElement
+  const sluVal = document.getElementById('valSlump') as HTMLElement
+
+  dbg.checked = config.debug
+  delay.value = String(config.delaySec)
+  con.value = String(config.concernX)
+  slu.value = String(config.slumpX)
+  conVal.textContent = config.concernX.toFixed(2)
+  sluVal.textContent = config.slumpX.toFixed(2)
+
+  dbg.addEventListener('change', () => {
+    config.debug = dbg.checked
+    saveConfig()
+    if (!config.debug) techEl.style.display = 'none'
+  })
+  delay.addEventListener('change', () => {
+    const v = Math.max(1, Math.min(15, Math.round(Number(delay.value) || DEFAULTS.delaySec)))
+    config.delaySec = v
+    delay.value = String(v)
+    saveConfig()
+  })
+  con.addEventListener('input', () => {
+    config.concernX = Number(con.value)
+    conVal.textContent = config.concernX.toFixed(2)
+    saveConfig()
+  })
+  slu.addEventListener('input', () => {
+    config.slumpX = Number(slu.value)
+    sluVal.textContent = config.slumpX.toFixed(2)
+    saveConfig()
+  })
 }
 
+type Pose = 'proud' | 'concernA' | 'concernB' | 'slump'
+const pngs: Record<Pose, Uint8Array> = {} as Record<Pose, Uint8Array>
 const W = ICON_W
 const H = ICON_H
 const CX = W * 0.42
@@ -83,7 +180,6 @@ async function makePng(draw: (ctx: CanvasRenderingContext2D) => void): Promise<U
   })
   return new Uint8Array(await blob.arrayBuffer())
 }
-
 function bg(ctx: CanvasRenderingContext2D): void {
   ctx.fillStyle = '#000'
   ctx.fillRect(0, 0, W, H)
@@ -129,7 +225,6 @@ function bang(ctx: CanvasRenderingContext2D): void {
   ctx.arc(W * 0.85, H * 0.24, W * 0.045, 0, Math.PI * 2)
   ctx.fill()
 }
-
 function drawProud(ctx: CanvasRenderingContext2D): void {
   bg(ctx)
   bodyHeadEars(ctx)
@@ -142,7 +237,6 @@ function drawProud(ctx: CanvasRenderingContext2D): void {
   ctx.stroke()
   eyes(ctx)
 }
-
 function drawConcern(ctx: CanvasRenderingContext2D, phase: number): void {
   bg(ctx)
   bodyHeadEars(ctx)
@@ -157,7 +251,6 @@ function drawConcern(ctx: CanvasRenderingContext2D, phase: number): void {
   eyes(ctx)
   bang(ctx)
 }
-
 function drawSlump(ctx: CanvasRenderingContext2D): void {
   bg(ctx)
   ctx.fillStyle = '#fff'
@@ -198,6 +291,18 @@ function drawSlump(ctx: CanvasRenderingContext2D): void {
   ctx.stroke()
 }
 
+let latestX: number | null = null
+let lastSampleAt = 0
+let smoothedX: number | null = null
+let engaged = false
+let holdMs = 0
+let lastTick = 0
+let lastRearm = 0
+let pendingPose: Pose = 'proud'
+let sentPose: Pose | null = null
+let imgSending = false
+let lastImgSendAt = 0
+let lastHudText = ''
 let bridgeRef: Awaited<ReturnType<typeof waitForEvenAppBridge>> | null = null
 
 function tickImage(now: number): void {
@@ -211,11 +316,10 @@ function tickImage(now: number): void {
   bridgeRef
     .updateImageRawData(new ImageRawDataUpdate({ containerID: 1, containerName: 'cat', imageData: pngs[target] }))
     .then((r) => {
-      tech(`img: ${String(r)} (${target})`)
       if (r === ImageRawDataUpdateResult.success) sentPose = target
     })
-    .catch((e) => {
-      tech(`img error: ${String(e)}`)
+    .catch(() => {
+      /* 次 tick で再送 */
     })
     .finally(() => {
       imgSending = false
@@ -223,11 +327,15 @@ function tickImage(now: number): void {
 }
 
 async function main(): Promise<void> {
+  loadConfig()
+  applyI18n()
+  initSettingsUI()
+
   let bridge: Awaited<ReturnType<typeof waitForEvenAppBridge>>
   try {
     bridge = await waitForEvenAppBridge()
   } catch {
-    setPhone('🐱', 'Even アプリで開いてください', '通常のブラウザでは動作しません')
+    setPhone('🐱', L.openInApp, L.openInAppSub)
     return
   }
   bridgeRef = bridge
@@ -237,15 +345,16 @@ async function main(): Promise<void> {
   pngs.concernB = await makePng((c) => drawConcern(c, 1))
   pngs.slump = await makePng(drawSlump)
 
-  const imageObject = [
-    new ImageContainerProperty({ xPosition: ICON_X, yPosition: ICON_Y, width: ICON_W, height: ICON_H, containerID: 1, containerName: 'cat' }),
-  ]
-  const textObject = DEBUG
-    ? [new TextContainerProperty({ xPosition: 8, yPosition: 4, width: 360, height: 28, containerID: 2, containerName: 'debug', content: '', isEventCapture: 0 })]
-    : []
-
   await bridge.createStartUpPageContainer(
-    new CreateStartUpPageContainer({ containerTotalNum: DEBUG ? 2 : 1, imageObject, textObject }),
+    new CreateStartUpPageContainer({
+      containerTotalNum: 2,
+      imageObject: [
+        new ImageContainerProperty({ xPosition: ICON_X, yPosition: ICON_Y, width: ICON_W, height: ICON_H, containerID: 1, containerName: 'cat' }),
+      ],
+      textObject: [
+        new TextContainerProperty({ xPosition: 8, yPosition: 4, width: 380, height: 28, containerID: 2, containerName: 'debug', content: ' ', isEventCapture: 0 }),
+      ],
+    }),
   )
 
   await bridge.imuControl(true, ImuReportPace.P100)
@@ -270,55 +379,52 @@ async function main(): Promise<void> {
       void bridge.imuControl(true, ImuReportPace.P100)
     }
 
+    const concernX = config.concernX
+    const slumpEff = Math.min(config.slumpX, concernX)
+    const exitX = concernX + EXIT_MARGIN
+
     if (latestX !== null) {
       smoothedX = smoothedX === null ? latestX : smoothedX * (1 - EMA_ALPHA) + latestX * EMA_ALPHA
-      if (!isDown && smoothedX < ENTER) isDown = true
-      else if (isDown && smoothedX > EXIT) isDown = false
-      if (isDown) {
-        downAccumMs += dt
-        if (downAccumMs >= SUSTAIN_MS) slumped = true
-      } else {
-        downAccumMs = 0
-        slumped = false
-      }
+      if (!engaged && smoothedX <= concernX) engaged = true
+      else if (engaged && smoothedX > exitX) engaged = false
+      if (engaged) holdMs += dt
+      else holdMs = 0
     }
 
     let pose: Pose = 'proud'
-    let label = 'OK'
+    let stateKey = 'good'
     if (latestX === null) {
-      label = 'no data'
-    } else if (slumped) {
-      pose = 'slump'
-      label = 'SLUMP'
-    } else if (isDown && downAccumMs >= WARN_AFTER_MS) {
-      pose = Math.floor(now / WAG_MS) % 2 === 0 ? 'concernA' : 'concernB'
-      label = `warn ${(downAccumMs / 1000).toFixed(0)}s`
-    } else if (isDown) {
-      label = `down ${(downAccumMs / 1000).toFixed(0)}s`
+      stateKey = 'connecting'
+    } else if (engaged && holdMs >= config.delaySec * 1000) {
+      if (smoothedX !== null && smoothedX <= slumpEff) {
+        pose = 'slump'
+        stateKey = 'slump'
+      } else {
+        pose = Math.floor(now / WAG_MS) % 2 === 0 ? 'concernA' : 'concernB'
+        stateKey = 'concern'
+      }
     }
     pendingPose = pose
     tickImage(now)
 
-    // HUD のデバッグ文字
     const xStr = smoothedX === null ? '-' : smoothedX.toFixed(2)
-    if (DEBUG) {
-      const debugContent = `${label} x${xStr}`
-      if (debugContent !== lastDebugContent) {
-        lastDebugContent = debugContent
-        void bridge.textContainerUpgrade(
-          new TextContainerUpgrade({ containerID: 2, containerName: 'debug', content: debugContent }),
-        )
-      }
+
+    const hudText = config.debug ? `${stateKey} x${xStr}` : ' '
+    if (hudText !== lastHudText) {
+      lastHudText = hudText
+      void bridge.textContainerUpgrade(
+        new TextContainerUpgrade({ containerID: 2, containerName: 'debug', content: hudText }),
+      )
     }
 
-    // スマホ画面（ユーザー向けの状態表示）
-    if (latestX === null) setPhone('⌛', 'グラスと接続中…', 'Even グラスを装着してください')
-    else if (pose === 'slump') setPhone('😿', '猫がぐったり…', '背すじを伸ばすと起き上がります')
-    else if (pose === 'concernA' || pose === 'concernB') setPhone('🙀', '猫背気味です', '背すじを伸ばして')
-    else setPhone('😺', 'いい姿勢です', 'その調子！猫もごきげん')
+    if (stateKey === 'connecting') setPhone('⌛', L.connecting, L.connectingSub)
+    else if (stateKey === 'slump') setPhone('😿', L.slump, L.slumpSub)
+    else if (stateKey === 'concern') setPhone('🙀', L.concern, L.concernSub)
+    else setPhone('😺', L.good, L.goodSub)
 
+    valXEl.textContent = xStr
     const ageStr = age === Infinity ? '-' : (age / 1000).toFixed(1)
-    tech(`${label} x${xStr} age${ageStr}`)
+    tech(`${stateKey} x${xStr} age${ageStr}`)
   }, TICK_MS)
 }
 
