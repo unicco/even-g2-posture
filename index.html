@@ -19,17 +19,17 @@
       .section { font-size:12px; color:var(--sub); margin:26px 6px 8px; }
       .row { padding:13px 2px; border-top:1px solid var(--line); font-size:15px; display:flex; align-items:center; justify-content:space-between; gap:12px; }
       .row:first-child { border-top:none; }
-      .row .val { color:var(--sub); font-size:14px; min-width:42px; text-align:right; }
+      .row .val { color:var(--sub); font-size:14px; min-width:46px; text-align:right; }
       .rowcol { display:block; }
       .rowcol input[type=range] { width:100%; margin-top:10px; }
-      input[type=number] { width:64px; font-size:15px; padding:6px 8px; border:1px solid var(--line); border-radius:8px; text-align:right; }
+      input[type=number] { width:66px; font-size:15px; padding:6px 8px; border:1px solid var(--line); border-radius:8px; text-align:right; }
       .toggle { position:relative; width:46px; height:28px; flex:0 0 auto; }
       .toggle input { opacity:0; width:0; height:0; }
       .sw { position:absolute; inset:0; background:#d1d1d6; border-radius:14px; transition:.2s; }
       .sw:before { content:''; position:absolute; height:24px; width:24px; left:2px; top:2px; background:#fff; border-radius:50%; transition:.2s; box-shadow:0 1px 2px rgba(0,0,0,.2); }
       .toggle input:checked + .sw { background:var(--accent); }
       .toggle input:checked + .sw:before { transform:translateX(18px); }
-      .info { padding:13px 2px; border-top:1px solid var(--line); font-size:15px; }
+      .info { padding:13px 2px; border-top:1px solid var(--line); font-size:15px; display:flex; justify-content:space-between; }
       #tech { display:none; font-family:ui-monospace,monospace; font-size:12px; color:var(--sub); margin-top:14px; text-align:center; }
       .foot { text-align:center; font-size:12px; color:var(--sub); margin-top:26px; }
     </style>
@@ -56,19 +56,19 @@
         <span id="lblDebug">デバッグ表示</span>
         <label class="toggle"><input type="checkbox" id="optDebug" /><span class="sw"></span></label>
       </div>
+      <div class="row rowcol">
+        <div style="display:flex;justify-content:space-between"><span id="lblTilt">反応する傾き X</span><span class="val" id="valTilt">-0.22</span></div>
+        <input type="range" id="optTilt" min="-0.35" max="-0.08" step="0.01" />
+      </div>
       <div class="row">
-        <span id="lblDelay">反応までの秒数</span>
-        <span><input type="number" id="optDelay" min="1" max="15" step="1" /> s</span>
+        <span id="lblWarn">「！」までの秒数</span>
+        <span><input type="number" id="optWarn" min="1" max="60" step="1" /> s</span>
       </div>
-      <div class="row rowcol">
-        <div style="display:flex;justify-content:space-between"><span id="lblConcern">「！」になる傾き X</span><span class="val" id="valConcern">-0.22</span></div>
-        <input type="range" id="optConcern" min="-0.35" max="-0.08" step="0.01" />
+      <div class="row">
+        <span id="lblSlump">ぐったりまでの秒数</span>
+        <span><input type="number" id="optSlump" min="2" max="300" step="1" /> s</span>
       </div>
-      <div class="row rowcol">
-        <div style="display:flex;justify-content:space-between"><span id="lblSlump">ぐったりになる傾き X</span><span class="val" id="valSlump">-0.33</span></div>
-        <input type="range" id="optSlump" min="-0.45" max="-0.20" step="0.01" />
-      </div>
-      <div class="info" style="display:flex;justify-content:space-between"><span id="lblCurrentX">現在の傾き X</span><span class="val" id="valX">-</span></div>
+      <div class="info"><span id="lblCurrentX">現在の傾き X</span><span class="val" id="valX">-</span></div>
     </div>
 
     <div class="section" id="secHowto">使い方</div>

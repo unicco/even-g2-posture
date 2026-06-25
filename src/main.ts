@@ -10,15 +10,16 @@ import {
   ImageRawDataUpdateResult,
 } from '@evenrealities/even_hub_sdk'
 
-// 姿勢 nudge（v13・角度ベース + 設定 + i18n）。
-//   浅い前傾（concernX 以下）→ ! 警告（尻尾フリフリ）/ 深い前傾（slumpX 以下）→ ぐったり。
-//   どちらも delaySec 続いてから発動。直す（exit 超え）と proud。
-// 設定（デバッグ表示 / 反応秒数 / concernX / slumpX）はスマホ画面で変更・localStorage 保存・即反映。
+// 姿勢 nudge（v14・時間ベース + 設定 + i18n）。
+//   傾きが tiltX 以下に入って、warnSec 続くと「！」警告（尻尾フリフリ）、
+//   slumpSec 続くとぐったり（こちらも弱く尻尾フリフリ）。直す（exit 超え）と proud。
+// 設定（デバッグ / tiltX / warnSec / slumpSec）はスマホ画面で変更・localStorage 保存・即反映。
 // 文言は navigator.language で ja/en 自動切替。HUD は猫のみ（言語非依存）。
 
 const EMA_ALPHA = 0.5
 const TICK_MS = 250
-const WAG_MS = 900
+const WARN_WAG_MS = 900 // concern の尻尾フリフリ（速め）
+const SLUMP_WAG_MS = 1300 // slump の尻尾フリフリ（弱く遅め）
 const EXIT_MARGIN = 0.08
 const STALE_REARM_MS = 8_000
 const REARM_EVERY_MS = 8_000
@@ -29,8 +30,8 @@ const ICON_H = 64
 const ICON_X = Math.round((576 - ICON_W) / 2)
 const ICON_Y = Math.round((288 - ICON_H) / 2) - 8
 
-type Config = { debug: boolean; delaySec: number; concernX: number; slumpX: number }
-const DEFAULTS: Config = { debug: false, delaySec: 3, concernX: -0.22, slumpX: -0.33 }
+type Config = { debug: boolean; tiltX: number; warnSec: number; slumpSec: number }
+const DEFAULTS: Config = { debug: false, tiltX: -0.22, warnSec: 3, slumpSec: 30 }
 const SKEY = 'postureCat.settings'
 let config: Config = { ...DEFAULTS }
 function loadConfig(): void {
@@ -54,9 +55,9 @@ const JA: Str = {
   tag: '猫が背すじを見守ります',
   secSettings: '設定',
   lblDebug: 'デバッグ表示',
-  lblDelay: '反応までの秒数',
-  lblConcern: '「！」になる傾き X',
-  lblSlump: 'ぐったりになる傾き X',
+  lblTilt: '反応する傾き X',
+  lblWarn: '「！」までの秒数',
+  lblSlump: 'ぐったりまでの秒数',
   lblCurrentX: '現在の傾き X',
   secHowto: '使い方',
   step1: '1. グラスを装着する',
@@ -78,9 +79,9 @@ const EN: Str = {
   tag: 'A cat that watches your posture',
   secSettings: 'Settings',
   lblDebug: 'Debug overlay',
-  lblDelay: 'Delay before reacting (sec)',
-  lblConcern: 'Warn (!) at tilt X',
-  lblSlump: 'Go limp at tilt X',
+  lblTilt: 'React at tilt X',
+  lblWarn: 'Seconds to warn (!)',
+  lblSlump: 'Seconds to go limp',
   lblCurrentX: 'Current tilt X',
   secHowto: 'How it works',
   step1: '1. Put on the glasses',
@@ -121,49 +122,48 @@ function tech(s: string): void {
 }
 function applyI18n(): void {
   document.documentElement.lang = L === JA ? 'ja' : 'en'
-  for (const id of ['tag', 'secSettings', 'lblDebug', 'lblDelay', 'lblConcern', 'lblSlump', 'lblCurrentX', 'secHowto', 'step1', 'step2', 'step3', 'foot']) {
+  for (const id of ['tag', 'secSettings', 'lblDebug', 'lblTilt', 'lblWarn', 'lblSlump', 'lblCurrentX', 'secHowto', 'step1', 'step2', 'step3', 'foot']) {
     setText(id, id)
   }
 }
 function initSettingsUI(): void {
   const dbg = document.getElementById('optDebug') as HTMLInputElement
-  const delay = document.getElementById('optDelay') as HTMLInputElement
-  const con = document.getElementById('optConcern') as HTMLInputElement
-  const slu = document.getElementById('optSlump') as HTMLInputElement
-  const conVal = document.getElementById('valConcern') as HTMLElement
-  const sluVal = document.getElementById('valSlump') as HTMLElement
+  const tilt = document.getElementById('optTilt') as HTMLInputElement
+  const warn = document.getElementById('optWarn') as HTMLInputElement
+  const slump = document.getElementById('optSlump') as HTMLInputElement
+  const tiltVal = document.getElementById('valTilt') as HTMLElement
 
   dbg.checked = config.debug
-  delay.value = String(config.delaySec)
-  con.value = String(config.concernX)
-  slu.value = String(config.slumpX)
-  conVal.textContent = config.concernX.toFixed(2)
-  sluVal.textContent = config.slumpX.toFixed(2)
+  tilt.value = String(config.tiltX)
+  warn.value = String(config.warnSec)
+  slump.value = String(config.slumpSec)
+  tiltVal.textContent = config.tiltX.toFixed(2)
 
   dbg.addEventListener('change', () => {
     config.debug = dbg.checked
     saveConfig()
     if (!config.debug) techEl.style.display = 'none'
   })
-  delay.addEventListener('change', () => {
-    const v = Math.max(1, Math.min(15, Math.round(Number(delay.value) || DEFAULTS.delaySec)))
-    config.delaySec = v
-    delay.value = String(v)
+  tilt.addEventListener('input', () => {
+    config.tiltX = Number(tilt.value)
+    tiltVal.textContent = config.tiltX.toFixed(2)
     saveConfig()
   })
-  con.addEventListener('input', () => {
-    config.concernX = Number(con.value)
-    conVal.textContent = config.concernX.toFixed(2)
+  warn.addEventListener('change', () => {
+    const v = Math.max(1, Math.min(60, Math.round(Number(warn.value) || DEFAULTS.warnSec)))
+    config.warnSec = v
+    warn.value = String(v)
     saveConfig()
   })
-  slu.addEventListener('input', () => {
-    config.slumpX = Number(slu.value)
-    sluVal.textContent = config.slumpX.toFixed(2)
+  slump.addEventListener('change', () => {
+    const v = Math.max(2, Math.min(300, Math.round(Number(slump.value) || DEFAULTS.slumpSec)))
+    config.slumpSec = v
+    slump.value = String(v)
     saveConfig()
   })
 }
 
-type Pose = 'proud' | 'concernA' | 'concernB' | 'slump'
+type Pose = 'proud' | 'concernA' | 'concernB' | 'slumpA' | 'slumpB'
 const pngs: Record<Pose, Uint8Array> = {} as Record<Pose, Uint8Array>
 const W = ICON_W
 const H = ICON_H
@@ -251,7 +251,7 @@ function drawConcern(ctx: CanvasRenderingContext2D, phase: number): void {
   eyes(ctx)
   bang(ctx)
 }
-function drawSlump(ctx: CanvasRenderingContext2D): void {
+function drawSlump(ctx: CanvasRenderingContext2D, phase: number): void {
   bg(ctx)
   ctx.fillStyle = '#fff'
   ctx.beginPath()
@@ -272,13 +272,16 @@ function drawSlump(ctx: CanvasRenderingContext2D): void {
   ctx.lineTo(W * 0.37, H * 0.52)
   ctx.closePath()
   ctx.fill()
+  // 力ない尻尾を弱く振る
   ctx.lineWidth = W * 0.09
   ctx.strokeStyle = '#fff'
   ctx.lineCap = 'round'
   ctx.beginPath()
   ctx.moveTo(W * 0.84, H * 0.78)
-  ctx.quadraticCurveTo(W * 0.94, H * 0.82, W * 0.89, H * 0.92)
+  if (phase === 0) ctx.quadraticCurveTo(W * 0.94, H * 0.82, W * 0.89, H * 0.92)
+  else ctx.quadraticCurveTo(W * 0.94, H * 0.72, W * 0.9, H * 0.82)
   ctx.stroke()
+  // 閉じた目
   ctx.strokeStyle = '#000'
   ctx.lineWidth = H * 0.025
   ctx.beginPath()
@@ -343,7 +346,8 @@ async function main(): Promise<void> {
   pngs.proud = await makePng(drawProud)
   pngs.concernA = await makePng((c) => drawConcern(c, 0))
   pngs.concernB = await makePng((c) => drawConcern(c, 1))
-  pngs.slump = await makePng(drawSlump)
+  pngs.slumpA = await makePng((c) => drawSlump(c, 0))
+  pngs.slumpB = await makePng((c) => drawSlump(c, 1))
 
   await bridge.createStartUpPageContainer(
     new CreateStartUpPageContainer({
@@ -379,30 +383,29 @@ async function main(): Promise<void> {
       void bridge.imuControl(true, ImuReportPace.P100)
     }
 
-    const concernX = config.concernX
-    const slumpEff = Math.min(config.slumpX, concernX)
-    const exitX = concernX + EXIT_MARGIN
-
+    const tiltX = config.tiltX
+    const exitX = tiltX + EXIT_MARGIN
     if (latestX !== null) {
       smoothedX = smoothedX === null ? latestX : smoothedX * (1 - EMA_ALPHA) + latestX * EMA_ALPHA
-      if (!engaged && smoothedX <= concernX) engaged = true
+      if (!engaged && smoothedX <= tiltX) engaged = true
       else if (engaged && smoothedX > exitX) engaged = false
       if (engaged) holdMs += dt
       else holdMs = 0
     }
 
+    const warnMs = config.warnSec * 1000
+    const slumpMs = Math.max(config.slumpSec, config.warnSec + 1) * 1000
+
     let pose: Pose = 'proud'
     let stateKey = 'good'
     if (latestX === null) {
       stateKey = 'connecting'
-    } else if (engaged && holdMs >= config.delaySec * 1000) {
-      if (smoothedX !== null && smoothedX <= slumpEff) {
-        pose = 'slump'
-        stateKey = 'slump'
-      } else {
-        pose = Math.floor(now / WAG_MS) % 2 === 0 ? 'concernA' : 'concernB'
-        stateKey = 'concern'
-      }
+    } else if (engaged && holdMs >= slumpMs) {
+      pose = Math.floor(now / SLUMP_WAG_MS) % 2 === 0 ? 'slumpA' : 'slumpB'
+      stateKey = 'slump'
+    } else if (engaged && holdMs >= warnMs) {
+      pose = Math.floor(now / WARN_WAG_MS) % 2 === 0 ? 'concernA' : 'concernB'
+      stateKey = 'concern'
     }
     pendingPose = pose
     tickImage(now)
