@@ -7,27 +7,37 @@ import {
   TextContainerUpgrade,
 } from '@evenrealities/even_hub_sdk'
 
-// 姿勢 nudge 本体（v2）。
-// IMU の x 軸（前後の傾き）を見て、うつむき（猫背）が続いたら HUD にそっと知らせる。
-// 実機校正の値: まっすぐ x≈-0.08 / 下を向く x≈-0.36 / 上 x≈+0.44（下ほど x がマイナス）。
+// 姿勢 nudge 本体（v4）。
+// IMU の x 軸（前後の傾き）で「うつむき」を検知し、続いたら HUD に通知。
+// 実機校正: まっすぐ x≈-0.08 / 下 x≈-0.36 / 上 x≈+0.44（下ほど x がマイナス）。
+//
+// 重要な実機知見: IMU は「動いている間だけ」データを出す（静止すると停止）。
+// そこで「最後に観測した姿勢を保持し、次にデータが来るまで継続中とみなす」方式にする。
+//   → 静止した猫背（動かない前かがみ）でもカウントが進み発火する。
+//   → まっすぐに直すと頭が動くのでイベントが来て OK に戻る。
+// 既知の限界: 下向きの角度でグラスを外して置くと誤カウントしうる（将来 装着検知で補強）。
 
-// --- しきい値・タイミング（実機で調整可） ---
+// --- しきい値・タイミング（実機で調整可。SUSTAIN/COOLDOWN は今テスト用に短め） ---
 const ENTER = -0.25 // これを下回ったら「うつむき」入り
-const EXIT = -0.15 // これを上回ったら解除（ヒステリシスでちらつき防止）
+const EXIT = -0.15 // これを上回ったら解除（ヒステリシス）
 const SUSTAIN_MS = 30_000 // うつむきが続いたら nudge を出すまでの時間
 const COOLDOWN_MS = 60_000 // 一度出したら次まで黙る時間
-const NUDGE_SHOW_MS = 4_000 // nudge を表示しておく時間
-const EMA_ALPHA = 0.2 // 平滑化の強さ（小さいほど滑らか）
+const NUDGE_SHOW_MS = 4_000
+const EMA_ALPHA = 0.5 // 平滑化（イベントが疎なので速めに追従）
+const TICK_MS = 250
 const NUDGE_TEXT = '背すじ！'
+const NUDGE_CLEAR = ' ' // 空文字だと HUD が更新を無視して前のテキストが残るため空白で上書き
 
 // --- 状態 ---
+let latestX: number | null = null // 最後に観測した x（動くまで保持）
+let lastSampleAt = 0
 let smoothedX: number | null = null
 let isDown = false
-let downSince = 0
-let lastNudge = 0
+let downAccumMs = 0
+let lastNudge = -COOLDOWN_MS
 let nudgeUntil = 0
+let lastTick = 0
 
-// HUD への無駄な書き込みを避けるため、前回描いた内容を覚えておく
 let lastNudgeContent = ''
 let lastDebugContent = ''
 
@@ -47,7 +57,6 @@ async function main(): Promise<void> {
 
   statusEl.textContent = 'HUD を作成中…'
 
-  // HUD: 中央に nudge、下部に小さくデバッグ表示（576x288・左上原点）
   await bridge.createStartUpPageContainer(
     new CreateStartUpPageContainer({
       containerTotalNum: 2,
@@ -61,36 +70,41 @@ async function main(): Promise<void> {
   await bridge.imuControl(true, ImuReportPace.P100)
   statusEl.textContent = '姿勢モニタ稼働中'
 
-  // IMU イベント: 平滑化と状態遷移だけを担う（描画は別の定期処理に任せる）
+  // IMU イベントは「最新値の記録」だけ（判定は定期ループ側）
   bridge.onEvenHubEvent((event) => {
     const sys = event.sysEvent
     if (!sys || sys.eventType !== OsEventTypeList.IMU_DATA_REPORT || !sys.imuData) return
     if (typeof sys.imuData.x !== 'number') return
-    const x = sys.imuData.x
-
-    smoothedX = smoothedX === null ? x : smoothedX * (1 - EMA_ALPHA) + x * EMA_ALPHA
-
-    const now = Date.now()
-    if (!isDown && smoothedX < ENTER) {
-      isDown = true
-      downSince = now
-    } else if (isDown && smoothedX > EXIT) {
-      isDown = false
-    }
-
-    // うつむきが SUSTAIN_MS 続き、かつクールダウンを過ぎていれば nudge
-    if (isDown && now - downSince >= SUSTAIN_MS && now - lastNudge >= COOLDOWN_MS) {
-      lastNudge = now
-      nudgeUntil = now + NUDGE_SHOW_MS
-    }
+    latestX = sys.imuData.x
+    lastSampleAt = Date.now()
   })
 
-  // 描画: 250ms ごと。IMU がバーストで届いても表示は一定ペースで安定させる
+  lastTick = Date.now()
   setInterval(() => {
     const now = Date.now()
-    const sx = smoothedX
+    const dt = now - lastTick
+    lastTick = now
 
-    const nudgeContent = now < nudgeUntil ? NUDGE_TEXT : ''
+    // 最後に観測した姿勢を保持して毎 tick 判定する（静止＝姿勢継続中とみなす）
+    if (latestX !== null) {
+      smoothedX = smoothedX === null ? latestX : smoothedX * (1 - EMA_ALPHA) + latestX * EMA_ALPHA
+
+      if (!isDown && smoothedX < ENTER) isDown = true
+      else if (isDown && smoothedX > EXIT) isDown = false
+
+      if (isDown) downAccumMs += dt
+      else downAccumMs = 0
+
+      if (downAccumMs >= SUSTAIN_MS && now - lastNudge >= COOLDOWN_MS) {
+        lastNudge = now
+        nudgeUntil = now + NUDGE_SHOW_MS
+        downAccumMs = 0 // 発火後はリセット（次は再び SUSTAIN 必要）
+      }
+    }
+
+    // --- HUD 描画（変化時のみ書き込み） ---
+    // 表示は時間制限（NUDGE_SHOW_MS）かつ「まだ下向きの間」だけ。姿勢を直したら即消える。
+    const nudgeContent = now < nudgeUntil && isDown ? NUDGE_TEXT : NUDGE_CLEAR
     if (nudgeContent !== lastNudgeContent) {
       lastNudgeContent = nudgeContent
       void bridge.textContainerUpgrade(
@@ -98,11 +112,14 @@ async function main(): Promise<void> {
       )
     }
 
+    const age = lastSampleAt === 0 ? Infinity : now - lastSampleAt
+    const xStr = smoothedX === null ? '-' : smoothedX.toFixed(2)
+    const ageStr = age === Infinity ? '-' : (age / 1000).toFixed(1)
     let state: string
-    if (sx === null) state = 'no data'
-    else if (isDown) state = `DOWN ${Math.floor((now - downSince) / 1000)}s`
+    if (latestX === null) state = 'no data'
+    else if (isDown) state = `DOWN ${(downAccumMs / 1000).toFixed(0)}s`
     else state = 'OK'
-    const debugContent = `x ${sx === null ? '-' : sx.toFixed(2)}  ${state}`
+    const debugContent = `x ${xStr} ${state} age${ageStr}`
     if (debugContent !== lastDebugContent) {
       lastDebugContent = debugContent
       void bridge.textContainerUpgrade(
@@ -111,9 +128,9 @@ async function main(): Promise<void> {
     }
 
     // スマホ画面（デバッグ用）
-    valuesEl.textContent = `x(平滑): ${sx === null ? '-' : sx.toFixed(3)}`
-    maxEl.textContent = `状態: ${state}${now < nudgeUntil ? ' 〔nudge 表示中〕' : ''}`
-  }, 250)
+    valuesEl.textContent = `x(平滑): ${xStr}  age: ${ageStr}s`
+    maxEl.textContent = `状態: ${state}${now < nudgeUntil ? ' 〔nudge〕' : ''}`
+  }, TICK_MS)
 }
 
 void main()
