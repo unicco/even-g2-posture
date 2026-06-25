@@ -2,87 +2,107 @@
 <html lang="ja">
   <head>
     <meta charset="UTF-8" />
-    <title>Posture Cat — HUD preview (store screenshots)</title>
+    <title>Posture Cat — HUD screenshots (576x288)</title>
     <style>
       body { background: #111; color: #ccc; font-family: system-ui, sans-serif; margin: 24px; }
       h1 { font-size: 18px; }
-      .row { display: flex; gap: 32px; flex-wrap: wrap; margin-top: 16px; }
+      .row { display: flex; gap: 28px; flex-wrap: wrap; margin-top: 16px; }
       canvas { width: 576px; height: 288px; border: 1px solid #333; display: block; background: #000; }
       button { margin-top: 8px; padding: 6px 12px; }
       p { font-size: 13px; color: #888; }
     </style>
   </head>
   <body>
-    <h1>Posture Cat — HUD プレビュー（ストア用スクショ）</h1>
-    <p>グラスの HUD と同じ絵（緑の猫 on 黒・576×288 を 3 倍 = 1728×864 で書き出し）。各 Download でストアにアップする PNG が保存されます。</p>
+    <h1>Posture Cat — HUD スクショ（576×288・現行デザイン）</h1>
+    <p>グラスの HUD と同じ絵（緑の猫 on 黒・576×288 ネイティブ）。各 Download でストア用 PNG を保存。</p>
     <div class="row">
       <div>
-        <div>proud（良い姿勢）</div>
-        <canvas id="proud" width="1728" height="864"></canvas>
-        <button data-c="proud" data-name="posture-cat-proud.png">Download proud PNG</button>
+        <div>proud（いい姿勢）</div>
+        <canvas id="proud" width="576" height="288"></canvas>
+        <button data-c="proud" data-name="posture-cat-proud.png">Download proud</button>
+      </div>
+      <div>
+        <div>concern（！警告）</div>
+        <canvas id="concern" width="576" height="288"></canvas>
+        <button data-c="concern" data-name="posture-cat-concern.png">Download concern</button>
       </div>
       <div>
         <div>slump（ぐったり）</div>
-        <canvas id="slump" width="1728" height="864"></canvas>
-        <button data-c="slump" data-name="posture-cat-slump.png">Download slump PNG</button>
+        <canvas id="slump" width="576" height="288"></canvas>
+        <button data-c="slump" data-name="posture-cat-slump.png">Download slump</button>
       </div>
     </div>
 
     <script>
-      const S = 3
-      const ICON_X = Math.round((576 - 96) / 2)
-      const ICON_Y = Math.round((288 - 96) / 2) - 10
+      const W = 64, H = 64, CX = W * 0.42
+      const ICON_X = Math.round((576 - W) / 2)
+      const ICON_Y = Math.round((288 - H) / 2) - 8
       const GREEN = '#66ff8f'
 
-      function drawProud(ctx) {
-        const W = 96, H = 96, cx = W / 2
+      function bodyHeadEars(ctx) {
         ctx.fillStyle = GREEN
         ctx.beginPath()
-        ctx.moveTo(cx - W * 0.24, H * 0.94)
-        ctx.quadraticCurveTo(cx - W * 0.32, H * 0.55, cx - W * 0.15, H * 0.44)
-        ctx.lineTo(cx + W * 0.15, H * 0.44)
-        ctx.quadraticCurveTo(cx + W * 0.32, H * 0.55, cx + W * 0.24, H * 0.94)
+        ctx.moveTo(CX - W * 0.24, H * 0.94)
+        ctx.quadraticCurveTo(CX - W * 0.32, H * 0.55, CX - W * 0.15, H * 0.44)
+        ctx.lineTo(CX + W * 0.15, H * 0.44)
+        ctx.quadraticCurveTo(CX + W * 0.32, H * 0.55, CX + W * 0.24, H * 0.94)
         ctx.closePath(); ctx.fill()
-        ctx.beginPath(); ctx.arc(cx, H * 0.32, H * 0.18, 0, Math.PI * 2); ctx.fill()
-        ctx.beginPath(); ctx.moveTo(cx - H * 0.17, H * 0.21); ctx.lineTo(cx - H * 0.08, H * 0.04); ctx.lineTo(cx - H * 0.01, H * 0.2); ctx.closePath(); ctx.fill()
-        ctx.beginPath(); ctx.moveTo(cx + H * 0.17, H * 0.21); ctx.lineTo(cx + H * 0.08, H * 0.04); ctx.lineTo(cx + H * 0.01, H * 0.2); ctx.closePath(); ctx.fill()
-        ctx.lineWidth = W * 0.1; ctx.strokeStyle = GREEN; ctx.lineCap = 'round'
-        ctx.beginPath(); ctx.moveTo(cx + W * 0.2, H * 0.9); ctx.quadraticCurveTo(cx + W * 0.44, H * 0.82, cx + W * 0.4, H * 0.55); ctx.stroke()
+        ctx.beginPath(); ctx.arc(CX, H * 0.32, H * 0.18, 0, Math.PI * 2); ctx.fill()
+        ctx.beginPath(); ctx.moveTo(CX - H * 0.17, H * 0.21); ctx.lineTo(CX - H * 0.08, H * 0.04); ctx.lineTo(CX - H * 0.01, H * 0.2); ctx.closePath(); ctx.fill()
+        ctx.beginPath(); ctx.moveTo(CX + H * 0.17, H * 0.21); ctx.lineTo(CX + H * 0.08, H * 0.04); ctx.lineTo(CX + H * 0.01, H * 0.2); ctx.closePath(); ctx.fill()
+      }
+      function eyes(ctx) {
         ctx.fillStyle = '#000'
-        ctx.beginPath(); ctx.arc(cx - H * 0.07, H * 0.32, H * 0.028, 0, Math.PI * 2); ctx.fill()
-        ctx.beginPath(); ctx.arc(cx + H * 0.07, H * 0.32, H * 0.028, 0, Math.PI * 2); ctx.fill()
+        ctx.beginPath(); ctx.arc(CX - H * 0.07, H * 0.32, H * 0.03, 0, Math.PI * 2); ctx.fill()
+        ctx.beginPath(); ctx.arc(CX + H * 0.07, H * 0.32, H * 0.03, 0, Math.PI * 2); ctx.fill()
+      }
+      function bang(ctx) {
+        ctx.fillStyle = GREEN
+        ctx.fillRect(W * 0.82, H * 0.04, W * 0.06, H * 0.14)
+        ctx.beginPath(); ctx.arc(W * 0.85, H * 0.24, W * 0.045, 0, Math.PI * 2); ctx.fill()
+      }
+      function drawProud(ctx) {
+        bodyHeadEars(ctx)
+        ctx.lineWidth = W * 0.1; ctx.strokeStyle = GREEN; ctx.lineCap = 'round'
+        ctx.beginPath(); ctx.moveTo(CX + W * 0.2, H * 0.9); ctx.quadraticCurveTo(CX + W * 0.42, H * 0.82, CX + W * 0.38, H * 0.55); ctx.stroke()
+        eyes(ctx)
+      }
+      function drawConcern(ctx) {
+        bodyHeadEars(ctx)
+        ctx.lineWidth = W * 0.1; ctx.strokeStyle = GREEN; ctx.lineCap = 'round'
+        ctx.beginPath(); ctx.moveTo(CX + W * 0.2, H * 0.9); ctx.quadraticCurveTo(CX + W * 0.44, H * 0.78, CX + W * 0.3, H * 0.5); ctx.stroke()
+        eyes(ctx); bang(ctx)
       }
       function drawSlump(ctx) {
-        const W = 96, H = 96
         ctx.fillStyle = GREEN
-        ctx.beginPath(); ctx.ellipse(W * 0.56, H * 0.76, W * 0.36, H * 0.15, 0, 0, Math.PI * 2); ctx.fill()
-        ctx.beginPath(); ctx.arc(W * 0.26, H * 0.66, H * 0.17, 0, Math.PI * 2); ctx.fill()
-        ctx.beginPath(); ctx.moveTo(W * 0.22, H * 0.54); ctx.lineTo(W * 0.1, H * 0.48); ctx.lineTo(W * 0.24, H * 0.5); ctx.closePath(); ctx.fill()
-        ctx.beginPath(); ctx.moveTo(W * 0.3, H * 0.52); ctx.lineTo(W * 0.3, H * 0.42); ctx.lineTo(W * 0.39, H * 0.52); ctx.closePath(); ctx.fill()
+        ctx.beginPath(); ctx.ellipse(W * 0.52, H * 0.76, W * 0.34, H * 0.15, 0, 0, Math.PI * 2); ctx.fill()
+        ctx.beginPath(); ctx.arc(W * 0.24, H * 0.66, H * 0.17, 0, Math.PI * 2); ctx.fill()
+        ctx.beginPath(); ctx.moveTo(W * 0.2, H * 0.54); ctx.lineTo(W * 0.08, H * 0.48); ctx.lineTo(W * 0.22, H * 0.5); ctx.closePath(); ctx.fill()
+        ctx.beginPath(); ctx.moveTo(W * 0.28, H * 0.52); ctx.lineTo(W * 0.28, H * 0.42); ctx.lineTo(W * 0.37, H * 0.52); ctx.closePath(); ctx.fill()
         ctx.lineWidth = W * 0.09; ctx.strokeStyle = GREEN; ctx.lineCap = 'round'
-        ctx.beginPath(); ctx.moveTo(W * 0.88, H * 0.78); ctx.quadraticCurveTo(W * 0.98, H * 0.82, W * 0.93, H * 0.92); ctx.stroke()
-        ctx.strokeStyle = '#000'; ctx.lineWidth = H * 0.022
-        ctx.beginPath(); ctx.moveTo(W * 0.19, H * 0.64); ctx.lineTo(W * 0.26, H * 0.64); ctx.stroke()
-        ctx.beginPath(); ctx.moveTo(W * 0.3, H * 0.64); ctx.lineTo(W * 0.37, H * 0.64); ctx.stroke()
+        ctx.beginPath(); ctx.moveTo(W * 0.84, H * 0.78); ctx.quadraticCurveTo(W * 0.94, H * 0.82, W * 0.89, H * 0.92); ctx.stroke()
+        ctx.strokeStyle = '#000'; ctx.lineWidth = H * 0.025
+        ctx.beginPath(); ctx.moveTo(W * 0.17, H * 0.64); ctx.lineTo(W * 0.24, H * 0.64); ctx.stroke()
+        ctx.beginPath(); ctx.moveTo(W * 0.28, H * 0.64); ctx.lineTo(W * 0.35, H * 0.64); ctx.stroke()
       }
 
-      function render(id, drawFn) {
+      function render(id, fn) {
         const canvas = document.getElementById(id)
         const ctx = canvas.getContext('2d')
-        ctx.setTransform(1, 0, 0, 1, 0, 0)
         ctx.fillStyle = '#000'
         ctx.fillRect(0, 0, canvas.width, canvas.height)
-        ctx.scale(S, S)
+        ctx.save()
         ctx.translate(ICON_X, ICON_Y)
-        drawFn(ctx)
+        fn(ctx)
+        ctx.restore()
       }
       render('proud', drawProud)
+      render('concern', drawConcern)
       render('slump', drawSlump)
 
       document.querySelectorAll('button').forEach((b) => {
         b.addEventListener('click', () => {
-          const canvas = document.getElementById(b.dataset.c)
-          canvas.toBlob((blob) => {
+          document.getElementById(b.dataset.c).toBlob((blob) => {
             const a = document.createElement('a')
             a.href = URL.createObjectURL(blob)
             a.download = b.dataset.name
