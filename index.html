@@ -15,13 +15,11 @@
   </head>
   <body>
     <main>
-      <h1>IMU monitor</h1>
+      <h1>姿勢 nudge</h1>
       <p id="status">接続待ち…</p>
-      <pre id="values">x: -
-y: -
-z: -</pre>
-      <div id="max">max: -</div>
-      <p id="hint">グラスを着けて頭を前後・左右に動かし、どの軸がうつむきで動くか観察します。</p>
+      <pre id="values">x(平滑): -</pre>
+      <div id="max">状態: -</div>
+      <p id="hint">うつむき（x &lt; -0.25）が 30 秒続くと HUD に「背すじ！」を表示します。数字は実機で調整可。</p>
     </main>
     <script type="module" src="/src/main.ts"></script>
   </body>

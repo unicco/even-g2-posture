@@ -7,21 +7,33 @@ import {
   TextContainerUpgrade,
 } from '@evenrealities/even_hub_sdk'
 
-// 姿勢 nudge アプリの第一歩（校正用）。
-// IMU の生 x/y/z を スマホ画面（デバッグ用）と G2 HUD の両方に出すだけ。
-// グラスを着けて頭を動かし、「うつむき」でどの軸がどう動くかを実機で観察し、
-// あとで猫背判定のしきい値を決めるための土台にする。
+// 姿勢 nudge 本体（v2）。
+// IMU の x 軸（前後の傾き）を見て、うつむき（猫背）が続いたら HUD にそっと知らせる。
+// 実機校正の値: まっすぐ x≈-0.08 / 下を向く x≈-0.36 / 上 x≈+0.44（下ほど x がマイナス）。
+
+// --- しきい値・タイミング（実機で調整可） ---
+const ENTER = -0.25 // これを下回ったら「うつむき」入り
+const EXIT = -0.15 // これを上回ったら解除（ヒステリシスでちらつき防止）
+const SUSTAIN_MS = 30_000 // うつむきが続いたら nudge を出すまでの時間
+const COOLDOWN_MS = 60_000 // 一度出したら次まで黙る時間
+const NUDGE_SHOW_MS = 4_000 // nudge を表示しておく時間
+const EMA_ALPHA = 0.2 // 平滑化の強さ（小さいほど滑らか）
+const NUDGE_TEXT = '背すじ！'
+
+// --- 状態 ---
+let smoothedX: number | null = null
+let isDown = false
+let downSince = 0
+let lastNudge = 0
+let nudgeUntil = 0
+
+// HUD への無駄な書き込みを避けるため、前回描いた内容を覚えておく
+let lastNudgeContent = ''
+let lastDebugContent = ''
 
 const statusEl = document.getElementById('status') as HTMLElement
 const valuesEl = document.getElementById('values') as HTMLElement
 const maxEl = document.getElementById('max') as HTMLElement
-
-const maxAbs = { x: 0, y: 0, z: 0 }
-let lastHudUpdate = 0
-
-function fmt(n: number): string {
-  return (n >= 0 ? ' ' : '') + n.toFixed(2)
-}
 
 async function main(): Promise<void> {
   let bridge: Awaited<ReturnType<typeof waitForEvenAppBridge>>
@@ -33,53 +45,75 @@ async function main(): Promise<void> {
     return
   }
 
-  statusEl.textContent = '接続済み。HUD を作成中…'
+  statusEl.textContent = 'HUD を作成中…'
 
-  // G2 HUD に表示枠を作る（576x288・左上原点・テキストは最大 8 個）
-  const createRes = await bridge.createStartUpPageContainer(
+  // HUD: 中央に nudge、下部に小さくデバッグ表示（576x288・左上原点）
+  await bridge.createStartUpPageContainer(
     new CreateStartUpPageContainer({
-      containerTotalNum: 3,
+      containerTotalNum: 2,
       textObject: [
-        new TextContainerProperty({ xPosition: 20, yPosition: 20, width: 536, height: 40, containerID: 1, containerName: 'title', content: 'IMU monitor', isEventCapture: 0 }),
-        new TextContainerProperty({ xPosition: 20, yPosition: 110, width: 536, height: 60, containerID: 2, containerName: 'xyz', content: 'x - y - z -', isEventCapture: 0 }),
-        new TextContainerProperty({ xPosition: 20, yPosition: 210, width: 536, height: 50, containerID: 3, containerName: 'max', content: 'max -', isEventCapture: 0 }),
+        new TextContainerProperty({ xPosition: 100, yPosition: 90, width: 376, height: 90, containerID: 1, containerName: 'nudge', content: '', isEventCapture: 0 }),
+        new TextContainerProperty({ xPosition: 20, yPosition: 244, width: 536, height: 36, containerID: 2, containerName: 'debug', content: 'starting…', isEventCapture: 0 }),
       ],
     }),
   )
-  statusEl.textContent = 'HUD 作成結果: ' + String(createRes)
 
-  // IMU を 100Hz で開始
   await bridge.imuControl(true, ImuReportPace.P100)
-  statusEl.textContent = 'IMU 稼働中。頭を動かして値を確認してください。'
+  statusEl.textContent = '姿勢モニタ稼働中'
 
+  // IMU イベント: 平滑化と状態遷移だけを担う（描画は別の定期処理に任せる）
   bridge.onEvenHubEvent((event) => {
     const sys = event.sysEvent
     if (!sys || sys.eventType !== OsEventTypeList.IMU_DATA_REPORT || !sys.imuData) return
+    if (typeof sys.imuData.x !== 'number') return
+    const x = sys.imuData.x
 
-    const x = sys.imuData.x ?? 0
-    const y = sys.imuData.y ?? 0
-    const z = sys.imuData.z ?? 0
+    smoothedX = smoothedX === null ? x : smoothedX * (1 - EMA_ALPHA) + x * EMA_ALPHA
 
-    // スマホ画面は毎イベント更新（デバッグ用に生値を大きく表示）
-    valuesEl.textContent = `x: ${fmt(x)}\ny: ${fmt(y)}\nz: ${fmt(z)}`
-
-    maxAbs.x = Math.max(maxAbs.x, Math.abs(x))
-    maxAbs.y = Math.max(maxAbs.y, Math.abs(y))
-    maxAbs.z = Math.max(maxAbs.z, Math.abs(z))
-    maxEl.textContent = `max |x| ${maxAbs.x.toFixed(2)}  |y| ${maxAbs.y.toFixed(2)}  |z| ${maxAbs.z.toFixed(2)}`
-
-    // HUD 描画は 200ms ごとに間引く（毎フレーム書き換えるとちらつく・負荷も高い）
     const now = Date.now()
-    if (now - lastHudUpdate < 200) return
-    lastHudUpdate = now
+    if (!isDown && smoothedX < ENTER) {
+      isDown = true
+      downSince = now
+    } else if (isDown && smoothedX > EXIT) {
+      isDown = false
+    }
 
-    void bridge.textContainerUpgrade(
-      new TextContainerUpgrade({ containerID: 2, containerName: 'xyz', content: `x${fmt(x)} y${fmt(y)} z${fmt(z)}` }),
-    )
-    void bridge.textContainerUpgrade(
-      new TextContainerUpgrade({ containerID: 3, containerName: 'max', content: `max x${maxAbs.x.toFixed(1)} y${maxAbs.y.toFixed(1)} z${maxAbs.z.toFixed(1)}` }),
-    )
+    // うつむきが SUSTAIN_MS 続き、かつクールダウンを過ぎていれば nudge
+    if (isDown && now - downSince >= SUSTAIN_MS && now - lastNudge >= COOLDOWN_MS) {
+      lastNudge = now
+      nudgeUntil = now + NUDGE_SHOW_MS
+    }
   })
+
+  // 描画: 250ms ごと。IMU がバーストで届いても表示は一定ペースで安定させる
+  setInterval(() => {
+    const now = Date.now()
+    const sx = smoothedX
+
+    const nudgeContent = now < nudgeUntil ? NUDGE_TEXT : ''
+    if (nudgeContent !== lastNudgeContent) {
+      lastNudgeContent = nudgeContent
+      void bridge.textContainerUpgrade(
+        new TextContainerUpgrade({ containerID: 1, containerName: 'nudge', content: nudgeContent }),
+      )
+    }
+
+    let state: string
+    if (sx === null) state = 'no data'
+    else if (isDown) state = `DOWN ${Math.floor((now - downSince) / 1000)}s`
+    else state = 'OK'
+    const debugContent = `x ${sx === null ? '-' : sx.toFixed(2)}  ${state}`
+    if (debugContent !== lastDebugContent) {
+      lastDebugContent = debugContent
+      void bridge.textContainerUpgrade(
+        new TextContainerUpgrade({ containerID: 2, containerName: 'debug', content: debugContent }),
+      )
+    }
+
+    // スマホ画面（デバッグ用）
+    valuesEl.textContent = `x(平滑): ${sx === null ? '-' : sx.toFixed(3)}`
+    maxEl.textContent = `状態: ${state}${now < nudgeUntil ? ' 〔nudge 表示中〕' : ''}`
+  }, 250)
 }
 
 void main()
