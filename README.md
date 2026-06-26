@@ -1,56 +1,68 @@
-# even-g2-posture
+# Posture Cat 🐱
 
-Even Realities G2 向けの**姿勢 nudge アプリ**。
-頭の前傾（IMU）を検知して「うつむき・猫背が続いたら HUD にそっと知らせる」のが最終ゴール。
+A reactive posture reminder for the [Even Realities G2](https://www.evenrealities.com/) smart glasses.
 
-このリポジトリの現状は **MVP（第一歩）= IMU の生値を可視化する校正アプリ**。
-グラスを着けて頭を動かし、「どの軸がうつむきで動くか」「どの値で猫背とみなすか」を実機で観察するための土台。
+A little cat sits in the corner of your HUD and mirrors how you hold your head:
 
-## 技術スタック
-- Web アプリ（TypeScript + Vite）を Even アプリの WebView 内で動かす
-- `@evenrealities/even_hub_sdk` でグラスの IMU 取得・HUD 描画
-- 開発・配信は公式 `@evenrealities/evenhub-cli`
+- **Good posture** → the cat sits up proud.
+- **Slouching for a while** → it warns you with a `!` and a wagging tail.
+- **Keep slouching** → it goes limp.
+- **Sit up straight** → it perks right back.
 
-## 必要なもの
-- Node.js 20+
-- Even G2 + Even アプリ（スマホ）でペアリング済み
-- スマホと Mac が**同じ Wi-Fi**
+Everything runs **on-device**. Only the built-in motion sensor (IMU) is used — no camera, microphone, network, or account.
 
-## 開発（実機テスト）
+## Features
+
+- Reactive cat with three states (good / warning / limp), drawn on a `<canvas>` and pushed to the HUD.
+- Tail-wag animation in the warning and limp states.
+- In-app settings on the phone screen, applied live and saved to `localStorage`:
+  - tilt threshold (how far down counts as slouching)
+  - seconds before the `!` warning
+  - seconds before the cat goes limp
+  - debug overlay on/off
+- Japanese / English UI, auto-selected from the device language.
+- 100% on-device, no network calls.
+
+## How it works
+
+The IMU reports head orientation; the app watches the **X axis (pitch)**. Looking down drives X negative. When the smoothed X stays below the configured threshold for the configured time, the cat reacts. The cat is drawn with the Canvas API, exported to PNG, and rendered to the HUD through the Even Hub SDK's image container. The phone WebView shows a small status/settings screen.
+
+## Develop
+
+Requirements: Node 18+, an Even G2 paired with the Even app, and developer mode enabled (sign in at [hub.evenrealities.com](https://hub.evenrealities.com), then a Developer Center appears in the app).
 
 ```bash
 npm install
-
-# 1. dev サーバー起動（LAN に公開される）
-npm run dev
-
-# 2. 別ターミナルで QR を生成（dev サーバーの URL をエンコード）
-npm run qr
+npm run dev            # Vite dev server (binds 0.0.0.0 for LAN access)
+npx evenhub qr         # QR of the dev URL -> scan it in the app's Developer Center
 ```
 
-→ Even アプリの **Developer Center** で QR をスキャンするとグラスに sideload される。
-グラスを着けて頭を前後・左右に動かすと、HUD とスマホ画面に IMU の `x / y / z` が出る。
+Build & package:
 
-> 通常のブラウザで `localhost:5173` を開いても SDK のネイティブ機能（IMU）は動かない。
-> 値が見たいときは必ず Even アプリ経由で開くこと（ブラウザでは案内メッセージのみ表示）。
-
-## 配布パッケージ
 ```bash
 npm run build
-npx evenhub pack app.json ./dist --output even-g2-posture.ehpk
+npx evenhub pack app.json ./dist -o posture-cat.ehpk
 ```
 
-## ファイル構成
-- `src/main.ts` — IMU 取得 → HUD / 画面に描画（本体）
-- `index.html` — スマホ画面のデバッグ表示
-- `app.json` — Even Hub アプリのメタdata（package_id 等）
-- `vite.config.ts` — `host: true` で LAN 公開（QR sideload のため）
+## Notes & gotchas (learned the hard way)
 
-## ロードマップ
-1. ✅ IMU 生値を可視化（校正）← 今ここ
-2. 頭の前傾角を算出し「前傾◯度が△分継続」で発火するしきい値を実測で決める
-3. HUD に控えめな nudge を出す（一定時間で消す）
-4. （発展）うつむき時間を life-log へ記録 → 可視化・睡眠/身体データ連載のネタに
+Even G2 examples are scarce, so here are the things that tripped us up:
 
-## 出自
-brain#473 から派生。当初は「G2 から life-log を音声照会」案だったが、Even の公式接続口（Terminal Mode / Add Agent）が用途に合わず、SDK で素直に作れる「IMU × 姿勢」案へピボット。
+- **The IMU only streams while the head is moving.** When you hold still, the data stops. Don't gate your logic on sample freshness — hold the last reading and treat "no new data" as "posture unchanged".
+- **`updateImageRawData` can resolve with `sendFailed`** — a *result value*, not a thrown error — when BLE is flaky. Re-send until it returns `success`.
+- **HUD images are PNG/BMP bytes** (`Uint8Array`); the host converts them to grayscale. Draw on a Canvas → `canvas.toBlob('image/png')` → send. Images can only be sent **after** `createStartUpPageContainer`, and not concurrently (await each send).
+- **Container properties are classes**, not plain objects — use `new TextContainerProperty({...})`, `new ImageContainerProperty({...})`, etc.
+- **The dev server must bind IPv4** (`server.host: '0.0.0.0'`). `host: true` binds IPv6-only and the phone can't reach it. Add any tunnel hostname to `server.allowedHosts`.
+- **HUD text has a fixed font size** — you can position and bound a text box but not scale the glyphs. Use images for anything graphic.
+
+## Tech
+
+TypeScript + [Vite](https://vite.dev) + [`@evenrealities/even_hub_sdk`](https://www.npmjs.com/package/@evenrealities/even_hub_sdk), packaged with [`@evenrealities/evenhub-cli`](https://www.npmjs.com/package/@evenrealities/evenhub-cli).
+
+## License
+
+[MIT](./LICENSE)
+
+---
+
+**日本語**: Even Realities G2 用の姿勢リマインダー。HUD の隅に猫がいて、うつむきが続くと `!` で警告し、放置するとぐったり、背すじを伸ばすと元気に戻ります。すべて端末内で完結（IMU のみ使用・通信なし）。設定（傾き・秒数・デバッグ）はスマホ画面から変更でき、日本語/英語は端末言語で自動切替。
