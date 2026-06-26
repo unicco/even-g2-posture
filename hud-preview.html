@@ -86,13 +86,15 @@
         ctx.beginPath(); ctx.moveTo(W * 0.28, H * 0.64); ctx.lineTo(W * 0.35, H * 0.64); ctx.stroke()
       }
 
+      const SCALE = 3 // スクショ用に猫を大きく（実機 HUD は等倍・これはストア映え用）
       function render(id, fn) {
         const canvas = document.getElementById(id)
         const ctx = canvas.getContext('2d')
         ctx.fillStyle = '#000'
         ctx.fillRect(0, 0, canvas.width, canvas.height)
         ctx.save()
-        ctx.translate(ICON_X, ICON_Y)
+        ctx.translate((576 - W * SCALE) / 2, (288 - H * SCALE) / 2)
+        ctx.scale(SCALE, SCALE)
         fn(ctx)
         ctx.restore()
       }
