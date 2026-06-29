@@ -11,6 +11,12 @@ A little cat sits in the corner of your HUD and mirrors how you hold your head:
 
 Everything runs **on-device**. Only the built-in motion sensor (IMU) is used — no camera, microphone, network, or account.
 
+| Good | Warning | Limp |
+|------|---------|------|
+| ![good](./store-screenshots/hud-proud.png) | ![warning](./store-screenshots/hud-concern.png) | ![limp](./store-screenshots/hud-slump.png) |
+
+(Actual 576×288 HUD framebuffers, captured from the official simulator.)
+
 ## Features
 
 - Reactive cat with three states (good / warning / limp), drawn on a `<canvas>` and pushed to the HUD.
@@ -54,6 +60,9 @@ Even G2 examples are scarce, so here are the things that tripped us up:
 - **Container properties are classes**, not plain objects — use `new TextContainerProperty({...})`, `new ImageContainerProperty({...})`, etc.
 - **The dev server must bind IPv4** (`server.host: '0.0.0.0'`). `host: true` binds IPv6-only and the phone can't reach it. Add any tunnel hostname to `server.allowedHosts`.
 - **HUD text has a fixed font size** — you can position and bound a text box but not scale the glyphs. Use images for anything graphic.
+- **Clean up on exit.** Review requires it: handle the OS exit events (`FOREGROUND_EXIT` / `ABNORMAL_EXIT` / `SYSTEM_EXIT`), call `imuControl(false)` to stop the sensor, and `shutDownPageContainer(0)` instead of relying on the OS to auto-kill the page.
+- **The simulator has no IMU.** `@evenrealities/evenhub-simulator` rejects `imuControl` (and `imuData` is always null), so don't `await imuControl(true)` un-guarded — an unhandled rejection there kills the whole app before it draws. Wrap it; the re-arm loop retries on real hardware.
+- **Store screenshots come from the simulator**, not a mockup — see [`store-screenshots/`](./store-screenshots/).
 
 ## Tech
 
