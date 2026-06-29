@@ -307,6 +307,35 @@ let imgSending = false
 let lastImgSendAt = 0
 let lastHudText = ''
 let bridgeRef: Awaited<ReturnType<typeof waitForEvenAppBridge>> | null = null
+let tickTimer: ReturnType<typeof setInterval> | null = null
+let unsubscribeHub: (() => void) | null = null
+let cleanedUp = false
+
+// 終了時のリソース解放。OS の自動終了に頼らず、IMU を止めてページコンテナを明示的に閉じる。
+// 終了イベント（FOREGROUND_EXIT / ABNORMAL_EXIT / SYSTEM_EXIT）と pagehide から呼ぶ。冪等。
+async function cleanup(): Promise<void> {
+  if (cleanedUp) return
+  cleanedUp = true
+  if (tickTimer !== null) {
+    clearInterval(tickTimer)
+    tickTimer = null
+  }
+  if (unsubscribeHub) {
+    unsubscribeHub()
+    unsubscribeHub = null
+  }
+  if (!bridgeRef) return
+  try {
+    await bridgeRef.imuControl(false)
+  } catch {
+    /* ignore */
+  }
+  try {
+    await bridgeRef.shutDownPageContainer(0)
+  } catch {
+    /* ignore */
+  }
+}
 
 function tickImage(now: number): void {
   if (!bridgeRef) return
@@ -361,18 +390,38 @@ async function main(): Promise<void> {
     }),
   )
 
-  await bridge.imuControl(true, ImuReportPace.P100)
+  // 初回の有効化が transient に失敗してもアプリを殺さない（ループ側の再 arm が拾う）。
+  try {
+    await bridge.imuControl(true, ImuReportPace.P100)
+  } catch {
+    /* 次 tick の re-arm で再試行 */
+  }
 
-  bridge.onEvenHubEvent((event) => {
+  unsubscribeHub = bridge.onEvenHubEvent((event) => {
     const sys = event.sysEvent
-    if (!sys || sys.eventType !== OsEventTypeList.IMU_DATA_REPORT || !sys.imuData) return
+    if (!sys) return
+    if (
+      sys.eventType === OsEventTypeList.FOREGROUND_EXIT_EVENT ||
+      sys.eventType === OsEventTypeList.ABNORMAL_EXIT_EVENT ||
+      sys.eventType === OsEventTypeList.SYSTEM_EXIT_EVENT
+    ) {
+      void cleanup()
+      return
+    }
+    if (sys.eventType !== OsEventTypeList.IMU_DATA_REPORT || !sys.imuData) return
     if (typeof sys.imuData.x !== 'number') return
     latestX = sys.imuData.x
     lastSampleAt = Date.now()
   })
 
+  // WebView がイベント無しで破棄される経路の保険。IMU 停止をベストエフォートで投げる。
+  window.addEventListener('pagehide', () => {
+    void cleanup()
+  })
+
   lastTick = Date.now()
-  setInterval(() => {
+  tickTimer = setInterval(() => {
+    if (cleanedUp) return // 終了処理後は再 arm しない（imuControl(false) と競合させない）
     const now = Date.now()
     const dt = now - lastTick
     lastTick = now
