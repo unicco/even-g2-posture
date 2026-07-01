@@ -400,6 +400,13 @@ async function main(): Promise<void> {
   unsubscribeHub = bridge.onEvenHubEvent((event) => {
     const sys = event.sysEvent
     if (!sys) return
+    // ホームページでのダブルタップ = 退出ジェスチャー。ここでは終了せず、OS の確認ダイアログを出す。
+    // shutDownPageContainer(1) は前景に確認レイヤーを出し、退出可否をユーザーに委ねる。
+    // 実際の終了はユーザーが確認した後に FOREGROUND_EXIT 等が飛び、cleanup() で (0) を呼ぶ。
+    if (sys.eventType === OsEventTypeList.DOUBLE_CLICK_EVENT) {
+      void bridge.shutDownPageContainer(1)
+      return
+    }
     if (
       sys.eventType === OsEventTypeList.FOREGROUND_EXIT_EVENT ||
       sys.eventType === OsEventTypeList.ABNORMAL_EXIT_EVENT ||
