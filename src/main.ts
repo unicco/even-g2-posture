@@ -24,6 +24,9 @@ const EXIT_MARGIN = 0.08
 const STALE_REARM_MS = 8_000
 const REARM_EVERY_MS = 8_000
 const IMG_RETRY_MS = 500
+const INIT_POSE_TRIES = 6 // 起動時 proud を送り切るまでの試行上限（超えても tick 側の再送に委ねる）
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
 const ICON_W = 64
 const ICON_H = 64
@@ -358,6 +361,28 @@ function tickImage(now: number): void {
     })
 }
 
+// 起動直後に proud を HUD へ送り切る。成功したら sentPose を埋め、tick 側の初回再送を抑止。
+// これを imuControl(true) より前に呼ぶことが肝心（下の順序の注記参照）。
+async function sendInitialPose(): Promise<void> {
+  if (!bridgeRef) return
+  for (let i = 0; i < INIT_POSE_TRIES; i++) {
+    try {
+      const r = await bridgeRef.updateImageRawData(
+        new ImageRawDataUpdate({ containerID: 1, containerName: 'cat', imageData: pngs.proud }),
+      )
+      if (r === ImageRawDataUpdateResult.success) {
+        sentPose = 'proud'
+        pendingPose = 'proud'
+        lastImgSendAt = Date.now()
+        return
+      }
+    } catch {
+      /* 次の試行 or tick 側の再送で拾う */
+    }
+    await sleep(IMG_RETRY_MS)
+  }
+}
+
 async function main(): Promise<void> {
   loadConfig()
   applyI18n()
@@ -389,6 +414,12 @@ async function main(): Promise<void> {
       ],
     }),
   )
+
+  // 猫を先に描いてから IMU を回す（順序が肝心）。
+  // IMU（P100）を先に有効化すると、頭が動いている間は IMU レポートが BLE を専有し、
+  // 初回の猫画像 push が通らない → 「静止（アイドル）するまで猫が出ない」症状になる。
+  // まず proud を送り切り、その後で imuControl(true) を有効化する。
+  await sendInitialPose()
 
   // 初回の有効化が transient に失敗してもアプリを殺さない（ループ側の再 arm が拾う）。
   try {
