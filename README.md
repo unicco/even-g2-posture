@@ -50,6 +50,19 @@ npm run build
 npx evenhub pack app.json ./dist -o posture-cat.ehpk
 ```
 
+### Record a demo video (simulator)
+
+The simulator has no IMU, so `?demo=1` feeds a scripted pitch instead: head up 4 s →
+down 16 s (warning after 2 s, limp after 8 s) → up 6 s, on a 26 s loop. Everything else
+(smoothing, hold timer, tail wag) is the real logic. Without the query parameter the hook
+is inert, so it ships harmlessly in the store build.
+
+```bash
+npm run dev
+evenhub-simulator "http://127.0.0.1:5173/?demo=1" --automation-port 9898
+python3 -I scripts/capture-demo.py out/   # needs ffmpeg; writes mp4 (576/1152 wide) + gif
+```
+
 ## Notes & gotchas (learned the hard way)
 
 Even G2 examples are scarce, so here are the things that tripped us up:
