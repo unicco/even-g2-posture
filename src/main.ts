@@ -383,6 +383,51 @@ async function sendInitialPose(): Promise<void> {
   }
 }
 
+// 撮影用デモ（`?demo=1` のときだけ）。シミュレータは IMU を流さないので、疑似 IMU の X を時系列で流して
+// 判定ロジック（EMA・hold・warn/slump）をそのまま通す。実機の挙動には影響しない（クエリ無しでは何もしない）。
+// 1 周期: 顔を上げている 4 秒 → うつむく 16 秒 → 顔を上げる 6 秒（計 26 秒）を繰り返す。
+const DEMO_UP_X = 0.0
+const DEMO_DOWN_X = -0.5
+const DEMO_TIMELINE_MS: Array<[number, number]> = [
+  [4_000, DEMO_UP_X],
+  [20_000, DEMO_DOWN_X],
+  [26_000, DEMO_UP_X],
+]
+const DEMO_FEED_MS = 100
+const DEMO_WARN_SEC = 2
+const DEMO_SLUMP_SEC = 8
+
+function isDemo(): boolean {
+  return new URLSearchParams(location.search).get('demo') === '1'
+}
+
+function startDemoFeed(): void {
+  config.warnSec = DEMO_WARN_SEC
+  config.slumpSec = DEMO_SLUMP_SEC
+  const periodMs = DEMO_TIMELINE_MS[DEMO_TIMELINE_MS.length - 1][0]
+  const startedAt = Date.now()
+  let lastCycle = -1
+  setInterval(() => {
+    if (cleanedUp) return
+    const elapsed = Date.now() - startedAt
+    const cycle = Math.floor(elapsed / periodMs)
+    if (cycle !== lastCycle) {
+      lastCycle = cycle
+      console.log(`[demo] cycle ${cycle} start`)
+    }
+    const t = elapsed % periodMs
+    let x = DEMO_UP_X
+    for (const [untilMs, value] of DEMO_TIMELINE_MS) {
+      if (t < untilMs) {
+        x = value
+        break
+      }
+    }
+    latestX = x
+    lastSampleAt = Date.now()
+  }, DEMO_FEED_MS)
+}
+
 async function main(): Promise<void> {
   loadConfig()
   applyI18n()
@@ -456,6 +501,8 @@ async function main(): Promise<void> {
   window.addEventListener('pagehide', () => {
     void cleanup()
   })
+
+  if (isDemo()) startDemoFeed()
 
   lastTick = Date.now()
   tickTimer = setInterval(() => {
